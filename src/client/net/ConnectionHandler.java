@@ -2,41 +2,104 @@ package client.net;
 
 import common.Request;
 import common.Response;
+import static common.RequestType.*;
 
 import java.io.*;
 import java.net.InetSocketAddress;
-import java.net.Socket;
 import java.nio.ByteBuffer;
-import java.util.Arrays;
-import java.util.stream.Stream;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.SocketChannel;
+import java.util.ArrayDeque;
+import java.util.Iterator;
+import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
 
-import static common.RequestType.*;
 
 /**
  * Class that handle the connection from client to server.
  */
-public class ConnectionHandler {
+public class ConnectionHandler implements Runnable{
 
-    private Socket socket;
-    private InputStream fromServer;
-    private OutputStream toServer;
     private IGameObserver gameObserver;
+    private SocketChannel socketChannel;
+    private Selector selector;
+    private boolean isConnected;
+    private ByteBuffer buffer = ByteBuffer.allocate(512);
+    private Queue<Request> messagesToSend = new ArrayDeque<>();
 
     public ConnectionHandler(IGameObserver gameObserver) {
         this.gameObserver = gameObserver;
     }
 
     public void connect(String host, int port) throws IOException{
-        socket = new Socket();
-        socket.connect(new InetSocketAddress(host,port),30000);
-        toServer = socket.getOutputStream();
-        fromServer = socket.getInputStream();
-        new Thread(new Listener()).start();
+        socketChannel = SocketChannel.open();
+        socketChannel.configureBlocking(false);
+        socketChannel.connect(new InetSocketAddress(host,port));
+        isConnected = true;
+        new Thread(this).start();
     }
 
+    @Override
+    public void run() {
+        try {
+            SelectionKey key;
+            setUpSelectorForConnection();
+            while(isConnected){
+                selector.select();
+                Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
+                while(keys.hasNext()){
+                    key = keys.next();
+                    if(key.isValid()) {
+                        if (key.isConnectable()) {
+                            socketChannel.finishConnect();
+                            key.interestOps(SelectionKey.OP_WRITE);
+                        }
+                        else if(key.isReadable()){
+                            readFromServer();
+                            key.interestOps(SelectionKey.OP_WRITE);
+                        }
+                        else if(key.isWritable()){
+                            writeToServer();
+                            key.interestOps(SelectionKey.OP_READ);
+                        }
+                    }
+                    keys.remove();
+                }
+            }
+            disconnectClient();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void setUpSelectorForConnection()throws IOException{
+        selector = Selector.open();
+        socketChannel.register(selector, SelectionKey.OP_WRITE);
+    }
+
+    private void readFromServer()throws IOException{
+        int bytesRead = socketChannel.read(buffer);
+        if(bytesRead > 0) {
+            buffer.flip();
+            CompletableFuture.runAsync(()-> {
+                        gameObserver.gameChanges(byteArrayToResponseObject(buffer.array()));
+                    });
+            buffer.clear();
+        }
+    }
+    private void writeToServer()throws IOException{
+        ByteBuffer tempBuffer = ByteBuffer.wrap(calculateAndPrependSizeOfObjectToBeSent(messagesToSend.remove()));
+        while(tempBuffer.hasRemaining()) socketChannel.write(tempBuffer);
+    }
+
+    private void disconnectClient()throws IOException{
+        socketChannel.close();
+        socketChannel.keyFor(selector).cancel();
+    }
 
     /**
-     * Request the server to set up a knew game
+     * Request the server to set up a new game
      */
     public void newGame(){
         sendGuess(new Request(NEW_GAME));
@@ -66,31 +129,33 @@ public class ConnectionHandler {
      *Send an Request with the type QUIT to tell the server to close its connection to client
      */
     public void quitGame(){
-        try {
-            sendGuess(new Request(QUIT));
-            socket.close();
-        }catch (IOException e){
-            e.printStackTrace();
-        }
+        sendGuess(new Request(QUIT));
+        isConnected = false;
     }
-
 
     /**
      *
-     * Takes the Reequest created in the public functions and sends it to the server.
+     * Takes the Request created in the public functions and sends it to the server.
      * @param request the protocol used for requests
      */
     private void sendGuess(Request request){
-        try {
-            byte[] temp = calculateAndPrependSizeOfObjectToBeSent(request);
-            for (int i = 0;i<temp.length;i++)
-                toServer.write(temp[i]);
-            toServer.flush();
-        }catch (IOException e){
-            e.printStackTrace();
-        }
+       messagesToSend.add(request);
+       selector.wakeup();
     }
 
+    private Response byteArrayToResponseObject(byte[] objectByteArray){
+        Response response = null;
+        try {
+            ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(objectByteArray);
+            ObjectInputStream in = new ObjectInputStream(byteArrayInputStream);
+            response = (Response) in.readObject();
+        } catch (IOException e){
+            e.printStackTrace();
+        }catch (ClassNotFoundException e){
+            e.printStackTrace();
+        }
+        return response;
+    }
 
     /**
      *
@@ -127,50 +192,6 @@ public class ConnectionHandler {
         }
 
         return objectAndLengthArray;
-    }
-
-    /**
-     * Inner class that are listening for communication from the server
-     */
-    private class Listener implements Runnable{
-        boolean run = true;
-        ByteBuffer byteBuffer;
-        byte[] temp = new byte[4];
-        @Override
-        public void run() {
-            while(run) {
-                try {
-                    for(int i = 0;i<4;i++){
-                        temp[i] = (byte)fromServer.read();
-                    }
-                    byteBuffer = ByteBuffer.wrap(temp);
-                    int size = byteBuffer.getInt(0);
-                    byte[] object = new byte[size];
-                    for(int i = 0; i<size;i++) {
-                        object[i] = (byte) fromServer.read();
-                    }
-                    Response response = byteArrayToResponseObject(object);
-                    gameObserver.gameChanges(response);
-                } catch (Exception e) {
-                    gameObserver.connectionLost();
-                    run = false;
-                }
-            }
-        }
-
-        private Response byteArrayToResponseObject(byte[] objectByteArray){
-            Response response = null;
-            try {
-                ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(objectByteArray);
-                ObjectInputStream in = new ObjectInputStream(byteArrayInputStream);
-                response = (Response) in.readObject();
-            } catch (IOException e){
-                e.printStackTrace();
-            }catch (ClassNotFoundException e){
-                e.printStackTrace();
-            }
-            return response;
-        }
     }
 }
 
