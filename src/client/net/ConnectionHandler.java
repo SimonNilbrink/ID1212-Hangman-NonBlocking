@@ -75,7 +75,7 @@ public class ConnectionHandler implements Runnable{
 
     private void setUpSelectorForConnection()throws IOException{
         selector = Selector.open();
-        socketChannel.register(selector, SelectionKey.OP_WRITE);
+        socketChannel.register(selector, SelectionKey.OP_CONNECT);
     }
 
     private void readFromServer()throws IOException{
