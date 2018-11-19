@@ -14,18 +14,25 @@ public class Game {
     private int totalScore = 0;
     private boolean isDone;
     private String guessedLetters;
+    private Callback callback;
 
+    public Game(Callback callback){
+        this.callback = callback;
+    }
 
-    public Response newGame(){
+    public void newGame(){
         pickAWord();
         this.attemptsLeft = word.length();
         theWordSoFar = new char[word.length()];
         rightGuesses = 0;
         guessedLetters = "";
         isDone = false;
-        return new Response(theWordSoFar,totalScore,attemptsLeft);
+        callback.callback(new Response(theWordSoFar,totalScore,attemptsLeft));
     }
 
+    public interface Callback {
+        void callback(Response response);
+    }
 
     private void pickAWord() {
         this.word = WordGenerator.getWord();
