@@ -72,7 +72,7 @@ public class UserInterface implements Runnable{
             };
             JOptionPane.showConfirmDialog(null, fields, "Connect to Server", JOptionPane.OK_CANCEL_OPTION);
             try {
-                connectionHandler.connect(ip.getText(), Integer.parseInt(port.getText()));
+                connectionHandler.connect("localhost",1337);
                 notConnected = false;
             }catch (IOException e) {
                 System.out.println("No connection could be established");

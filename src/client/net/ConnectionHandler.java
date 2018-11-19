@@ -1,7 +1,9 @@
 package client.net;
 
+import common.ObjectConverter;
 import common.Request;
 import common.Response;
+
 import static common.RequestType.*;
 
 import java.io.*;
@@ -11,7 +13,6 @@ import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
 import java.util.ArrayDeque;
-import java.util.Iterator;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 
@@ -27,6 +28,7 @@ public class ConnectionHandler implements Runnable{
     private boolean isConnected;
     private ByteBuffer buffer = ByteBuffer.allocate(512);
     private Queue<Request> messagesToSend = new ArrayDeque<>();
+    private boolean timeToSend;
 
     public ConnectionHandler(IGameObserver gameObserver) {
         this.gameObserver = gameObserver;
@@ -43,34 +45,35 @@ public class ConnectionHandler implements Runnable{
     @Override
     public void run() {
         try {
-            SelectionKey key;
             setUpSelectorForConnection();
             while(isConnected){
+                if (timeToSend) {
+                    socketChannel.keyFor(selector).interestOps(SelectionKey.OP_WRITE);
+                    timeToSend = false;
+                }
                 selector.select();
-                Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
-                while(keys.hasNext()){
-                    key = keys.next();
+                for(SelectionKey key : selector.selectedKeys()){
+                    selector.selectedKeys().remove(key);
                     if(key.isValid()) {
                         if (key.isConnectable()) {
-                            socketChannel.finishConnect();
-                            key.interestOps(SelectionKey.OP_WRITE);
+                            finishConnection(key);
                         }
                         else if(key.isReadable()){
                             readFromServer();
-                            key.interestOps(SelectionKey.OP_WRITE);
                         }
                         else if(key.isWritable()){
-                            writeToServer();
-                            key.interestOps(SelectionKey.OP_READ);
+                            writeToServer(key);
                         }
                     }
-                    keys.remove();
                 }
             }
             disconnectClient();
         } catch (IOException e) {
             e.printStackTrace();
         }
+    }
+    private void finishConnection(SelectionKey key) throws IOException{
+        socketChannel.finishConnect();
     }
 
     private void setUpSelectorForConnection()throws IOException{
@@ -83,14 +86,19 @@ public class ConnectionHandler implements Runnable{
         if(bytesRead > 0) {
             buffer.flip();
             CompletableFuture.runAsync(()-> {
-                        gameObserver.gameChanges(byteArrayToResponseObject(buffer.array()));
+                        gameObserver.gameChanges((Response) ObjectConverter.byteArrayToObject(buffer.array()));
                     });
             buffer.clear();
-        }
+        }else throw new IOException();
     }
-    private void writeToServer()throws IOException{
-        ByteBuffer tempBuffer = ByteBuffer.wrap(calculateAndPrependSizeOfObjectToBeSent(messagesToSend.remove()));
-        while(tempBuffer.hasRemaining()) socketChannel.write(tempBuffer);
+    private void writeToServer(SelectionKey key)throws IOException{
+        while(messagesToSend.peek()!=null){
+            ByteBuffer tempBuffer = ByteBuffer.wrap(ObjectConverter.calculateAndPrependSizeOfObjectToBeSent(messagesToSend.remove()));
+            while(tempBuffer.hasRemaining()) socketChannel.write(tempBuffer);
+        }
+        key.interestOps(SelectionKey.OP_READ);
+        selector.wakeup();
+
     }
 
     private void disconnectClient()throws IOException{
@@ -140,58 +148,10 @@ public class ConnectionHandler implements Runnable{
      */
     private void sendGuess(Request request){
        messagesToSend.add(request);
+       timeToSend = true;
        selector.wakeup();
     }
 
-    private Response byteArrayToResponseObject(byte[] objectByteArray){
-        Response response = null;
-        try {
-            ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(objectByteArray);
-            ObjectInputStream in = new ObjectInputStream(byteArrayInputStream);
-            response = (Response) in.readObject();
-        } catch (IOException e){
-            e.printStackTrace();
-        }catch (ClassNotFoundException e){
-            e.printStackTrace();
-        }
-        return response;
-    }
 
-    /**
-     *
-     * This function calculate the size of the Request object and prepend it to an byte array
-     * that contains the object itself.
-     *
-     * @param request the object to be sent
-     * @return an array with the object and the length to be sent
-     **/
-    private byte[] calculateAndPrependSizeOfObjectToBeSent(Request request){
-        byte[] objectArray;
-        byte[] objectAndLengthArray = null;
-        try {
-            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-            ObjectOutputStream objectOutputStream = new ObjectOutputStream(byteArrayOutputStream);
-
-            objectOutputStream.writeObject(request);
-            objectOutputStream.flush();
-            objectOutputStream.close();
-
-            objectArray = byteArrayOutputStream.toByteArray();
-
-            ByteBuffer byteBuffer = ByteBuffer.allocate(4);
-            byteBuffer.putInt(objectArray.length);
-
-            byte[] byteBufferArray = byteBuffer.array();
-            objectAndLengthArray = new byte[byteBufferArray.length+objectArray.length];
-
-            System.arraycopy(byteBufferArray, 0, objectAndLengthArray, 0, byteBufferArray.length);
-            System.arraycopy(objectArray,0,objectAndLengthArray,byteBufferArray.length,objectArray.length);
-
-        }catch (IOException e){
-            e.printStackTrace();
-        }
-
-        return objectAndLengthArray;
-    }
 }
 
