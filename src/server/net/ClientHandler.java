@@ -97,6 +97,9 @@ public class ClientHandler{
        clientChannel.close();
     }
 
+    /**
+     * Callback function for the thread that handles the I/O-operation (new game)
+     */
     private class ThreadResponse implements Game.Callback {
         public void callback(Response response){
             //responsesFromNewgameOp.add(response);

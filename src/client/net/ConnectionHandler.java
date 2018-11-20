@@ -34,6 +34,13 @@ public class ConnectionHandler implements Runnable{
         this.gameObserver = gameObserver;
     }
 
+    /**
+     * Sets up the socketchannel to be non-blocking and connects it to given host and ip
+     * @param host
+     * @param port
+     * @throws IOException
+     */
+
     public void connect(String host, int port) throws IOException{
         socketChannel = SocketChannel.open();
         socketChannel.configureBlocking(false);
@@ -56,7 +63,7 @@ public class ConnectionHandler implements Runnable{
                     selector.selectedKeys().remove(key);
                     if(key.isValid()) {
                         if (key.isConnectable()) {
-                            finishConnection(key);
+                            socketChannel.finishConnect();
                         }
                         else if(key.isReadable()){
                             readFromServer();
@@ -72,29 +79,39 @@ public class ConnectionHandler implements Runnable{
             e.printStackTrace();
         }
     }
-    private void finishConnection(SelectionKey key) throws IOException{
-        socketChannel.finishConnect();
-    }
 
+    /**
+     * Opens a new selector and setts it to be connectable so it can connect to the server
+     * @throws IOException
+     */
     private void setUpSelectorForConnection()throws IOException{
         selector = Selector.open();
         socketChannel.register(selector, SelectionKey.OP_CONNECT);
     }
 
+
+    /**
+     * Reads from the server channel to get the response from server
+     * @throws IOException
+     */
     private void readFromServer()throws IOException{
         int bytesRead = socketChannel.read(buffer);
         if(bytesRead > 0) {
             buffer.flip();
-            CompletableFuture.runAsync(()-> {
-                        gameObserver.gameChanges((Response) ObjectConverter.byteArrayToObject(buffer.array()));
-                    });
+            gameObserver.gameChanges((Response) ObjectConverter.byteArrayToObject(buffer.array()));
             buffer.clear();
         }else throw new IOException();
     }
+
+    /**
+     * Write to the server channel, takes all the messages in the queue and send them.
+     * @param key
+     * @throws IOException
+     */
     private void writeToServer(SelectionKey key)throws IOException{
-        while(messagesToSend.peek()!=null){
+        while(messagesToSend.peek()!=null) {
             ByteBuffer tempBuffer = ByteBuffer.wrap(ObjectConverter.calculateAndPrependSizeOfObjectToBeSent(messagesToSend.remove()));
-            while(tempBuffer.hasRemaining()) socketChannel.write(tempBuffer);
+            while (tempBuffer.hasRemaining()) socketChannel.write(tempBuffer);
         }
         key.interestOps(SelectionKey.OP_READ);
         selector.wakeup();
@@ -143,7 +160,9 @@ public class ConnectionHandler implements Runnable{
 
     /**
      *
-     * Takes the Request created in the public functions and sends it to the server.
+     * Takes the Request created in the public functions and sends it to the server,
+     * sets the variable timeToSend to true, so that the connection thread can set the key
+     * for the client channel to write operation.
      * @param request the protocol used for requests
      */
     private void sendGuess(Request request){
