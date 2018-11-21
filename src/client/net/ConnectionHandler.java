@@ -14,7 +14,6 @@ import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
 import java.util.ArrayDeque;
 import java.util.Queue;
-import java.util.concurrent.CompletableFuture;
 
 
 /**
@@ -27,7 +26,7 @@ public class ConnectionHandler implements Runnable{
     private Selector selector;
     private boolean isConnected;
     private ByteBuffer buffer = ByteBuffer.allocate(512);
-    private Queue<Request> messagesToSend = new ArrayDeque<>();
+    private final Queue<Request> requestsToSend = new ArrayDeque<>();
     private boolean timeToSend;
 
     public ConnectionHandler(IGameObserver gameObserver) {
@@ -109,13 +108,14 @@ public class ConnectionHandler implements Runnable{
      * @throws IOException
      */
     private void writeToServer(SelectionKey key)throws IOException{
-        while(messagesToSend.peek()!=null) {
-            ByteBuffer tempBuffer = ByteBuffer.wrap(ObjectConverter.calculateAndPrependSizeOfObjectToBeSent(messagesToSend.remove()));
-            while (tempBuffer.hasRemaining()) socketChannel.write(tempBuffer);
+        synchronized (requestsToSend) {
+            while (requestsToSend.peek() != null) {
+                ByteBuffer tempBuffer = ByteBuffer.wrap(ObjectConverter.calculateAndPrependSizeOfObjectToBeSent(requestsToSend.remove()));
+                while (tempBuffer.hasRemaining()) socketChannel.write(tempBuffer);
+            }
         }
         key.interestOps(SelectionKey.OP_READ);
         selector.wakeup();
-
     }
 
     private void disconnectClient()throws IOException{
@@ -166,10 +166,14 @@ public class ConnectionHandler implements Runnable{
      * @param request the protocol used for requests
      */
     private void sendGuess(Request request){
-       messagesToSend.add(request);
-       timeToSend = true;
-       selector.wakeup();
+        synchronized (requestsToSend) {
+            requestsToSend.add(request);
+        }
+        timeToSend = true;
+        selector.wakeup();
     }
+
+
 
 
 }

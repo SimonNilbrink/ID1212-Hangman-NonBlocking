@@ -21,8 +21,7 @@ public class ClientHandler{
     private Game game = new Game(new ThreadResponse());
     private boolean isConnected;
     private SocketChannel clientChannel;
-    private Queue<Response> messagesToSend = new ArrayDeque<>();
-    private Queue<Response> responsesFromNewgameOp = new ArrayDeque<>();
+    private final Queue<Response> responsesToSend = new ArrayDeque<>();
     private ByteBuffer buffer = ByteBuffer.allocate(512);
     private GameServer server;
 
@@ -72,23 +71,22 @@ public class ClientHandler{
      * Responsible to write data to the ByteBuffer, then send through a specific channel.
      */
      void writeToClient()  throws IOException{
-         while(messagesToSend.peek()!=null) {
-             ByteBuffer tempBuffer = ByteBuffer.wrap(ObjectConverter.calculateAndPrependSizeOfObjectToBeSent(messagesToSend.remove()));
-             while (tempBuffer.hasRemaining()) clientChannel.write(tempBuffer);
+         synchronized (responsesToSend) {
+             while (responsesToSend.peek() != null) {
+                 ByteBuffer tempBuffer = ByteBuffer.wrap(ObjectConverter.calculateAndPrependSizeOfObjectToBeSent(responsesToSend.remove()));
+                 while (tempBuffer.hasRemaining()) clientChannel.write(tempBuffer);
+             }
          }
     }
 
     /**
-     * First look in the queue that the new game thread adds responses to. This is done so only the main event
-     * loop thread uses the selector in GameServer.
+     *
      * @param response
      */
     private synchronized void addResponseToQueue(Response response){
-        /*while(responsesFromNewgameOp.peek() != null){
-            messagesToSend.add(responsesFromNewgameOp.remove());
-        }*/
-
-        messagesToSend.add(response);
+        synchronized (responsesToSend) {
+            responsesToSend.add(response);
+        }
         clientChannel.keyFor(server.getSelector()).interestOps(SelectionKey.OP_WRITE);
         server.getSelector().wakeup();
     }
@@ -102,7 +100,6 @@ public class ClientHandler{
      */
     private class ThreadResponse implements Game.Callback {
         public void callback(Response response){
-            //responsesFromNewgameOp.add(response);
             addResponseToQueue(response);
         }
     }
