@@ -1,21 +1,20 @@
 package client.view;
 
-import client.controller.ConnectionErrorException;
-import client.controller.Controller;
+import client.net.ConnectionHandler;
 
 import javax.swing.*;
+import java.io.IOException;
 
 /**
  * The class UserInterface takes care of all the input from the user.
  */
 public class UserInterface implements Runnable{
 
-    private Controller controller;
+    private ConnectionHandler connectionHandler;
 
-    public UserInterface(Controller controller) {
-        this.controller = controller;
+    public UserInterface(ConnectionHandler connectionHandler) {
+        this.connectionHandler = connectionHandler;
     }
-
 
     /**
      * The user interface runs in a separate thread.
@@ -36,11 +35,11 @@ public class UserInterface implements Runnable{
             else if(guess.charAt(0)=='*') {
                 switch (guess) {
                     case "*quit":
-                        controller.quitGame();
+                        connectionHandler.quitGame();
                         running = false;
                         break;
                     case "*new game":
-                        controller.newGame();
+                        connectionHandler.newGame();
                         gameStarted = true;
                         break;
                     default:
@@ -49,9 +48,9 @@ public class UserInterface implements Runnable{
                 }
             }
             else if(guess.length()==1 && gameStarted)
-                controller.guessLetter(guess.charAt(0));
+                connectionHandler.sendLetterToGuess(guess.charAt(0));
             else if(gameStarted)
-                controller.guessWord(guess);
+                connectionHandler.sendWordToGuess(guess);
             else
                 System.out.println("You need to start a new game before guessing.");
         }
@@ -73,9 +72,9 @@ public class UserInterface implements Runnable{
             };
             JOptionPane.showConfirmDialog(null, fields, "Connect to Server", JOptionPane.OK_CANCEL_OPTION);
             try {
-                controller.connect(ip.getText(), Integer.parseInt(port.getText()));
+                connectionHandler.connect("localhost",1337);
                 notConnected = false;
-            }catch (ConnectionErrorException connectionError){
+            }catch (IOException e) {
                 System.out.println("No connection could be established");
             }
         }

@@ -1,156 +1,108 @@
 package server.net;
 
+import common.ObjectConverter;
 import common.Request;
 import common.Response;
 import server.model.Game;
 
 import java.io.*;
-import java.net.Socket;
 import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.SocketChannel;
+import java.util.ArrayDeque;
+import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Handles all communication with one specific game client, makes sure to serve the client with what it requests.
  */
-public class ClientHandler implements Runnable {
+public class ClientHandler{
 
-    private OutputStream toTheClient;
-    private InputStream fromTheClient;
-    private Game game = new Game();
+    private Game game = new Game(new ThreadResponse());
     private boolean isConnected;
-    private Socket clientSocket;
+    private SocketChannel clientChannel;
+    private final Queue<Response> responsesToSend = new ArrayDeque<>();
+    private ByteBuffer buffer = ByteBuffer.allocate(512);
+    private GameServer server;
 
-    ClientHandler(Socket clientSocket) {
+    ClientHandler(GameServer server,SocketChannel clientChannel) {
+        this.server = server;
         isConnected = true;
-        this.clientSocket = clientSocket;
+        this.clientChannel = clientChannel;
 
     }
-    @Override
-    public void run(){
+
+    public void readFromClient() throws IOException {
         Response response;
+        Request request;
+
         try {
-            fromTheClient = clientSocket.getInputStream();
-            toTheClient = clientSocket.getOutputStream();
-        }
-        catch (IOException ex){
-            ex.printStackTrace();
-        }
-        while(isConnected){
-            ByteBuffer byteBuffer;
-            byte[] temp = new byte[4];
-            try {
-                for(int i = 0;i<4;i++){
-                    temp[i] = (byte)fromTheClient.read();
-                }
-                byteBuffer = ByteBuffer.wrap(temp);
-                int size = byteBuffer.getInt(0);
-                byte[] object = new byte[size];
-                for(int i = 0; i<size;i++) {
-                    object[i] = (byte) fromTheClient.read();
-                }
-                Request request = byteArrayToResponseObject(object);
-                switch (request.getRequestType()){
-                    case QUIT:
-                        clientDisconnect();
-                        break;
-                    case NEW_GAME:
-                        response = game.newGame();
-                        sendToClient(response);
-                        break;
-                    case GUESSLETTER:
-                        response = game.guessWithLetter(request.getLetterToGuess());
-                        sendToClient(response);
-                        break;
-                    case GUESSWORD:
-                        response = game.guessWithWord(request.getWordToGuess());
-                        sendToClient(response);
-                        break;
-                    default :
-                        System.out.println("no ");
-                }
+            int bytesRead = clientChannel.read(buffer);
+            if (bytesRead > 0) {
+                buffer.flip();
+                request = (Request) ObjectConverter.byteArrayToObject(buffer.array());
+                buffer.clear();
+            }else throw new IOException();
+
+            switch (request.getRequestType()) {
+                case QUIT:
+                    clientDisconnect();
+                    break;
+                case NEW_GAME:
+                    CompletableFuture.runAsync(()->game.newGame());
+                    break;
+                case GUESSLETTER:
+                    response = game.guessWithLetter(request.getLetterToGuess());
+                    addResponseToQueue(response);
+                    break;
+                case GUESSWORD:
+                    response = game.guessWithWord(request.getWordToGuess());
+                    addResponseToQueue(response);
+                    break;
+                default:
+                    System.out.println("no ");
             }
-            catch (Exception ex) {
-                clientDisconnect();
-            }
+        } catch (Exception ex) {
+            clientDisconnect();
         }
     }
 
     /**
-     * Responsible to send data to the client through the socket.
+     * Responsible to write data to the ByteBuffer, then send through a specific channel.
      */
-    private void sendToClient(Response response) {
-        try {
-            byte[] temp = calculateAndPrependSizeOfObjectToBeSent(response);
-            for (int i = 0;i<temp.length;i++)
-                toTheClient.write(temp[i]);
-            toTheClient.flush();
-        }catch (IOException e){
-            e.printStackTrace();
-        }
-    }
-
-    private void clientDisconnect(){
-        try {
-            clientSocket.close();
-            isConnected = false;
-        }
-        catch(IOException ex){
-            System.err.println("Failed to disconnect client");
-        }
+     void writeToClient()  throws IOException{
+         synchronized (responsesToSend) {
+             while (responsesToSend.peek() != null) {
+                 ByteBuffer tempBuffer = ByteBuffer.wrap(ObjectConverter.calculateAndPrependSizeOfObjectToBeSent(responsesToSend.remove()));
+                 while (tempBuffer.hasRemaining()) clientChannel.write(tempBuffer);
+             }
+         }
     }
 
     /**
      *
-     * This function calculate the size of the Resonse object and prepend it to an byte array
-     * that contains the object itself.
-     * @param response the object to be sent
-     * @return an byte array with the object and the length to be sent
-     **/
-    private byte[] calculateAndPrependSizeOfObjectToBeSent(Response response){
-        byte[] objectArray;
-        byte[] objectAndLengthByteArray = null;
-        try {
-            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-            ObjectOutputStream objectOutputStream = new ObjectOutputStream(byteArrayOutputStream);
-
-            objectOutputStream.writeObject(response);
-            objectOutputStream.flush();
-            objectOutputStream.close();
-
-            objectArray = byteArrayOutputStream.toByteArray();
-
-            ByteBuffer byteBuffer = ByteBuffer.allocate(4);
-            byteBuffer.putInt(objectArray.length);
-
-            byte[] byteBufferArray = byteBuffer.array();
-            objectAndLengthByteArray = new byte[byteBufferArray.length+objectArray.length];
-
-            System.arraycopy(byteBufferArray, 0, objectAndLengthByteArray, 0, byteBufferArray.length);
-            System.arraycopy(objectArray,0,objectAndLengthByteArray,byteBufferArray.length,objectArray.length);
-
-        }catch (IOException e){
-            e.printStackTrace();
+     * @param response
+     */
+    private synchronized void addResponseToQueue(Response response){
+        synchronized (responsesToSend) {
+            responsesToSend.add(response);
         }
+        clientChannel.keyFor(server.getSelector()).interestOps(SelectionKey.OP_WRITE);
+        server.getSelector().wakeup();
+    }
 
-        return objectAndLengthByteArray;
+    private void clientDisconnect() throws IOException{
+       clientChannel.close();
     }
 
     /**
-     * Takes the receive byte array from the client and output it as the object.
-     *
-     * @param objectByteArray the recieved byte array from client
-     * @return the object that the client sent
+     * Callback function for the thread that handles the I/O-operation (new game)
      */
-    private Request byteArrayToResponseObject(byte[] objectByteArray){
-        Request request = null;
-        try {
-            ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(objectByteArray);
-            ObjectInputStream in = new ObjectInputStream(byteArrayInputStream);
-            request = (Request) in.readObject();
-        } catch (IOException e){
-            e.printStackTrace();
-        }catch (ClassNotFoundException e){
-            e.printStackTrace();
+    private class ThreadResponse implements Game.Callback {
+        public void callback(Response response){
+            addResponseToQueue(response);
         }
-        return request;
     }
+
+
 }
